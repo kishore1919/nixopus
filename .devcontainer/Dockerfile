@@ -21,4 +21,4 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
 # Set up Go tools if needed
 RUN go install golang.org/x/tools/gopls@latest
 
-WORKDIR /workspace
+WORKDIR /workspace/nixopus
