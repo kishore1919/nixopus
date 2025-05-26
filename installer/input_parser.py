@@ -2,6 +2,7 @@ import argparse
 from validation import Validation
 import secrets
 import string
+import getpass
 
 class InputParser:
     def __init__(self):
@@ -87,15 +88,22 @@ class InputParser:
             # If only email is provided, validate it and ask for password
             elif args.email:
                 validation.validate_email(args.email)
-                password = input("Please enter the password for the admin(generates a strong password if left blank): ")
-                if not password:
-                    password = self.generate_strong_password()
-                validation.validate_password(password)
-                return args.email, password
+                for attempt in range(3):
+                    password = getpass.getpass("Please enter the password for the admin (leave blank to auto-generate): ").strip()
+                    if not password:
+                        password = self.generate_strong_password()
+                    try:
+                        validation.validate_password(password)
+                        return args.email, password
+                    except SystemExit:
+                        print("Invalid password. Try again.")
+                print("Maximum attempts reached. Aborting.")
+                return None, None
+
             # If only password is provided, validate it and ask for email
             elif args.password:
                 validation.validate_password(args.password)
-                while True:
+                for attempt in range(3):
                     email = input("Please enter the email for the admin: ")
                     try:
                         validation.validate_email(email)
@@ -103,7 +111,8 @@ class InputParser:
                     except SystemExit:
                         print("Please enter a valid email address")
                         continue
-        return None, None
+                print("Maximum attempts reached. Aborting.")
+                return None, None
     
     # will be used if no args are provided
     def ask_admin_credentials(self):
