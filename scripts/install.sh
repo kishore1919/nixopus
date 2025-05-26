@@ -1,11 +1,12 @@
 #!/bin/bash
+set -e
 
 if [ "$EUID" -ne 0 ]; then
     echo "Please run as root (sudo)"
     exit 1
 fi
 
-for cmd in python3 pip3 git; do
+for cmd in python3 pip3 git docker docker-compose; do
     if ! command -v $cmd &> /dev/null; then
         echo "$cmd is not installed. Please install $cmd before running this script."
         exit 1
