@@ -1,4 +1,4 @@
-name: QEMU Setup and Installation
+name: QEMU Setup with etchdroid/qemu-kvm-action
 
 on:
   push:
@@ -7,214 +7,61 @@ on:
     branches: [feat/develop]
   workflow_dispatch:
 
-env:
-  ADMIN_EMAIL: admin@nixopus.local
-  ADMIN_PASSWORD: Nixopus@123!Secure
-
 jobs:
-  setup-environment:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Docker
-        uses: docker/setup-docker-action@v3
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Install Docker Compose
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ca-certificates curl gnupg
-          sudo install -m 0755 -d /etc/apt/keyrings
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-          sudo chmod a+r /etc/apt/keyrings/docker.gpg
-          echo \
-            "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-            "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
-            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y docker-compose-plugin
-          docker compose version
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y python3 python3-pip git openssl
-
-      - name: Install QEMU utilities and sshpass
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-utils sshpass cloud-utils
-
-      - name: Make install script executable
-        run: chmod +x scripts/install.sh
-
   test_on_distros:
     runs-on: ubuntu-latest
-    needs: setup-environment
     strategy:
-      fail-fast: false # Continue testing other distros even if one fails
+      fail-fast: false
       matrix:
         include:
           - distro: debian11
             image_url: https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2
-            username: debian # Typical default username for Debian cloud images
+            username: debian
           - distro: debian12
             image_url: https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2
             username: debian
           - distro: ubuntu2004
             image_url: https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.qcow2
-            username: ubuntu # Typical default username for Ubuntu cloud images
+            username: ubuntu
           - distro: ubuntu2204
             image_url: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.qcow2
             username: ubuntu
           - distro: fedora_latest
             image_url: https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2
-            username: fedora # Typical default username for Fedora cloud images
+            username: fedora
           - distro: almalinux_latest
             image_url: https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2
-            username: almalinux # Typical default username for AlmaLinux cloud images
+            username: almalinux
           - distro: archlinux_latest
             image_url: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-            username: arch # Typical default username for Arch Linux cloud images
+            username: arch
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Debug Info
+      - name: Install dependencies
         run: |
-          echo "Starting test for ${{ matrix.distro }}"
-          echo "Image URL: ${{ matrix.image_url }}"
-          echo "Username: ${{ matrix.username }}"
-          echo "Runner temp directory: ${{ runner.temp }}"
+          sudo apt-get update
+          sudo apt-get install -y qemu-utils sshpass cloud-utils wget
 
-      - name: Download OS Image
+      - name: Setup QEMU VM
+        uses: etchdroid/qemu-kvm-action@v1
+        with:
+          image-url: ${{ matrix.image_url }}
+          username: ${{ matrix.username }}
+          ssh-public-key: ${{ secrets.SSH_PUBLIC_KEY }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          cloud-init: true
+
+      - name: Test VM connectivity
         run: |
-          mkdir -p ${{ runner.temp }}/images
-          wget -O ${{ runner.temp }}/images/${{ matrix.distro }}.qcow2 ${{ matrix.image_url }}
-          ls -lh ${{ runner.temp }}/images/
+          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            ${{ matrix.username }}@localhost echo "Hello from ${{ matrix.distro }}"
 
-      - name: Generate SSH key for VM access
-        run: |
-          ssh-keygen -t rsa -b 2048 -N "" -f ~/.ssh/id_rsa
-          echo "Public key:"
-          cat ~/.ssh/id_rsa.pub
-          # Ensure ssh-agent is running (useful for scp/ssh)
-          eval "$(ssh-agent -s)"
-          ssh-add ~/.ssh/id_rsa
-
-      - name: Create cloud-init ISO
-        id: cloud_init
-        run: |
-          mkdir -p ${{ runner.temp }}/cloud-init
-          KEY_PUB=$(cat ~/.ssh/id_rsa.pub) # We'll generate this key in a prior step
-          # Basic cloud-init: just add the public key
-          cat <<EOF > ${{ runner.temp }}/cloud-init/user-data
-          #cloud-config
-          users:
-            - name: ${{ matrix.username }}
-              ssh_authorized_keys:
-                - ${KEY_PUB}
-              sudo: ['ALL=(ALL) NOPASSWD:ALL']
-          EOF
-          cat <<EOF > ${{ runner.temp }}/cloud-init/meta-data
-          instance-id: iid-local01
-          local-hostname: ${{ matrix.distro }}-vm
-          EOF
-          sudo cloud-localds -v ${{ runner.temp }}/cloud-init/${{ matrix.distro }}-cloud-init.iso ${{ runner.temp }}/cloud-init/user-data ${{ runner.temp }}/cloud-init/meta-data
-          echo "iso_path=${{ runner.temp }}/cloud-init/${{ matrix.distro }}-cloud-init.iso" >> $GITHUB_OUTPUT
-          ls -lh ${{ runner.temp }}/cloud-init/
-
-      - name: Start QEMU VM
-        run: |
-          # Port for SSH forwarding
-          SSH_PORT=$(( ( RANDOM % (65535-1024) ) + 1024 ))
-          echo "Using host port $SSH_PORT for SSH to VM"
-          echo "SSH_PORT=$SSH_PORT" >> $GITHUB_ENV
-
-          sudo qemu-system-x86_64 \
-            -m 2048 \
-            -smp 2 \
-            -nographic \
-            -drive file=${{ runner.temp }}/images/${{ matrix.distro }}.qcow2,format=qcow2,if=virtio \
-            -drive file=${{ steps.cloud_init.outputs.iso_path }},media=cdrom,if=virtio \
-            -netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 \
-            -device virtio-net-pci,netdev=net0 \
-            -pidfile ${{ runner.temp }}/qemu_${{ matrix.distro }}.pid \
-            -daemonize
-          echo "QEMU VM started for ${{ matrix.distro }}."
-
-      - name: Wait for SSH to be available
-        run: |
-          echo "Waiting for SSH on port ${{ env.SSH_PORT }}..."
-          for i in {1..60}; do
-            if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -p ${{ env.SSH_PORT }} ${{ matrix.username }}@localhost "echo VM SSH is up"; then
-              echo "SSH connection successful."
-              break
-            fi
-            echo "Attempt $i: SSH not ready yet, sleeping 5s..."
-            sleep 5
-          done
-          # Final check, fail if still not up
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -p ${{ env.SSH_PORT }} ${{ matrix.username }}@localhost "echo VM SSH is verified"
-
-      - name: Copy install script to VM
-        run: |
-          scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -P ${{ env.SSH_PORT }} \
-            ./scripts/install.sh \
-            ${{ matrix.username }}@localhost:/tmp/install.sh
-
-      - name: Make install script executable and run it
-        run: |
-          echo "Executing install script on VM for ${{ matrix.distro }} via SSH..."
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${{ env.SSH_PORT }} ${{ matrix.username }}@localhost << 'EOF'
-            chmod +x /tmp/install.sh
-            echo "Running /tmp/install.sh..."
-            # Execute the script, capturing output and exit code
-            sudo /tmp/install.sh > /tmp/install_stdout.log 2> /tmp/install_stderr.log
-            SCRIPT_EXIT_CODE=$?
-
-            echo "" # Newline for cleaner log separation
-            echo "--- STDOUT from install.sh ---"
-            cat /tmp/install_stdout.log
-            echo "--- STDERR from install.sh ---"
-            cat /tmp/install_stderr.log
-            echo "------------------------------"
-            echo "INSTALL_SCRIPT_EXIT_CODE: ${SCRIPT_EXIT_CODE}"
-
-            # Clean up log files on VM
-            rm -f /tmp/install_stdout.log /tmp/install_stderr.log
-
-            exit ${SCRIPT_EXIT_CODE}
-          EOF
-          # The GitHub Actions step will fail if ssh returns a non-zero exit code.
-
-      - name: Cleanup VM specific files # optional, good practice
-        if: always() # Run even if previous steps fail
-        run: |
-          echo "Cleaning up for ${{ matrix.distro }}"
-          QEMU_PID_FILE=${{ runner.temp }}/qemu_${{ matrix.distro }}.pid
-          if [ -f "$QEMU_PID_FILE" ]; then
-            QEMU_PID=$(cat $QEMU_PID_FILE)
-            if [ -n "$QEMU_PID" ]; then
-              echo "Attempting to kill QEMU process with PID $QEMU_PID..."
-              sudo kill $QEMU_PID || echo "Failed to kill QEMU PID $QEMU_PID (maybe already stopped?)"
-              # Allow some time for process to terminate
-              sleep 2
-              # Optionally, check if process is still alive and force kill: sudo kill -9 $QEMU_PID
-            fi
-            rm -f $QEMU_PID_FILE
-          else
-            echo "QEMU PID file not found: $QEMU_PID_FILE"
-          fi
-          
-          # Existing cleanup
-          rm -f ${{ runner.temp }}/images/${{ matrix.distro }}.qcow2
-          rm -f ${{ steps.cloud_init.outputs.iso_path }}
-          # Be careful with removing SSH keys if they are reused across matrix jobs (they are not here)
+      # - name: Optionally run install script
+      #   if: false  # change to true when script is ready
+      #   run: |
+      #     scp -o StrictHostKeyChecking=no -P 22 ./scripts/install.sh ${{ matrix.username }}@localhost:/tmp/
+      #     ssh -o StrictHostKeyChecking=no -p 22 ${{ matrix.username }}@localhost \
+      #       'bash /tmp/install.sh'
