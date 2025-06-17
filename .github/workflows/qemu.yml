@@ -1,4 +1,4 @@
-name: QEMU Setup with etchdroid/qemu-kvm-action
+name: QEMU Setup with qemu-kvm-action
 
 on:
   push:
@@ -8,60 +8,78 @@ on:
   workflow_dispatch:
 
 jobs:
-  test_on_distros:
+  setup:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - distro: debian11
-            image_url: https://cloud.debian.org/images/cloud/bullseye/latest/debian-11-genericcloud-amd64.qcow2
-            username: debian
-          - distro: debian12
-            image_url: https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2
-            username: debian
-          - distro: ubuntu2004
-            image_url: https://cloud-images.ubuntu.com/focal/current/focal-server-cloudimg-amd64.qcow2
-            username: ubuntu
-          - distro: ubuntu2204
-            image_url: https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.qcow2
-            username: ubuntu
-          - distro: fedora_latest
-            image_url: https://download.fedoraproject.org/pub/fedora/linux/releases/39/Cloud/x86_64/images/Fedora-Cloud-Base-39-1.5.x86_64.qcow2
-            username: fedora
-          - distro: almalinux_latest
-            image_url: https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-latest.x86_64.qcow2
-            username: almalinux
-          - distro: archlinux_latest
-            image_url: https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
-            username: arch
-
+        distro: [debian-11, debian-12, ubuntu-20.04, ubuntu-22.04, fedora, almalinux, archlinux]
+    name: Test on ${{ matrix.distro }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Set up Docker
+        uses: docker/setup-docker-action@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install Docker Compose
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-utils sshpass cloud-utils wget
+          sudo apt-get install -y ca-certificates curl gnupg
+          sudo install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+          sudo chmod a+r /etc/apt/keyrings/docker.gpg
+          echo \
+            "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+            "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
+            sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y docker-compose-plugin
+          docker compose version
 
-      - name: Setup QEMU VM
+      - name: Run install.sh in ${{ matrix.distro }} VM
         uses: etchdroid/qemu-kvm-action@v1
         with:
-          image-url: ${{ matrix.image_url }}
-          username: ${{ matrix.username }}
-          ssh-public-key: ${{ secrets.SSH_PUBLIC_KEY }}
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
-          cloud-init: true
+          image: ${{ matrix.distro }}
+          shell: /bin/bash
+          run: |
+            echo "Running install.sh inside ${{ matrix.distro }}"
+            source /etc/os-release
 
-      - name: Test VM connectivity
-        run: |
-          ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-            ${{ matrix.username }}@localhost echo "Hello from ${{ matrix.distro }}"
+            case "$ID" in
+              ubuntu|debian)
+                apt update && apt install -y curl sudo bash
+                ;;
+              fedora)
+                dnf install -y curl sudo bash
+                ;;
+              almalinux|centos|rhel)
+                yum install -y curl sudo bash
+                ;;
+              arch)
+                pacman -Sy --noconfirm curl sudo bash
+                ;;
+              *)
+                echo "Unsupported distro: $ID"
+                exit 1
+                ;;
+            esac
 
-      # - name: Optionally run install script
-      #   if: false  # change to true when script is ready
-      #   run: |
-      #     scp -o StrictHostKeyChecking=no -P 22 ./scripts/install.sh ${{ matrix.username }}@localhost:/tmp/
-      #     ssh -o StrictHostKeyChecking=no -p 22 ${{ matrix.username }}@localhost \
-      #       'bash /tmp/install.sh'
+            sudo bash -c "$(curl -sSL https://raw.githubusercontent.com/raghavyuva/nixopus/refs/heads/master/scripts/install.sh)" -- \
+              --api-domain nixopusapi.example.tld \
+              --app-domain nixopus.example.tld \
+              --email admin@example.tld \
+              --password Adminpassword@123 \
+              --env production
+
+      - name: Cleanup
+        if: always()
+        run: echo "Cleaned VM: ${{ matrix.distro }}"
+          - centos
+          - rhel
